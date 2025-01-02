@@ -22,14 +22,14 @@ from OCD import *
 Given samples of two marginals X, Y, you can find the optimal pairing by first finding the optimal regularization parameter $epsilon$. Then, call the OCD solver via
 
 ```
-eps0 = find_opt_eps2(X0, Y0, log_eps_range=[-3,0], nepss = 400, perc=0.9998)
+eps0 = find_opt_eps2(X, Y, log_eps_range=[-3,0], nepss = 400, perc=0.9998)
 print("epsilon = ", eps0)
 
 dt = 0.1
 Nt = 200
 tol = 1e-6
 
-X_ocd, Y_ocd, dists, err_m2X, err_m2Y = ocd_map_RK4(X0, Y0, dt=dt, Nt=200, sigma=eps0, tol=tol)
+X_ocd, Y_ocd, dists, err_m2X, err_m2Y = ocd_map_RK4(X, Y, dt=dt, Nt=200, sigma=eps0, tol=tol)
 ```
 
 For examples of how this implementation can be used, see the Jupyter Notebooks in ```examples/``` directory.
