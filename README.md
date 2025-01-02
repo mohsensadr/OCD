@@ -19,7 +19,7 @@ sys.path.append(src_path)
 from OCD import *
 ```
 
-Given samples of two marginals X, Y, you can find the optimal pairing by first finding the optimal regularization parameter $epsilon$. Then, call the OCD solver via
+Given samples of two marginals X, Y, you can find the optimal pairing by first finding the optimal regularization parameter $\epsilon$. Then, call the OCD solver via
 
 ```
 eps0 = find_opt_eps2(X, Y, log_eps_range=[-3,0], nepss = 400, perc=0.9998)
