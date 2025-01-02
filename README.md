@@ -7,6 +7,8 @@ In this repository, we present an implementation of orthogonal coupling dynamics
 
 Mohsen Sadr, Peyman Mohajerin Esfehani, Hossein Gorji. "Optimal Transportation by Orthogonal Coupling Dynamics." 2024, preprint at [arXiv:2410.08060](https://doi.org/10.48550/arXiv.2410.08060).
 
+![Demo](testcases_paper/normal_banana_funnel_swissroll.png)
+
 ## Usage
 
 Here, we provide the most accessible (and not fastest) implementation of the OCD in NumPy. Simply, first import the library via
