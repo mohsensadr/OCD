@@ -9,6 +9,8 @@ Mohsen Sadr, Peyman Mohajerin Esfehani, Hossein Gorji. "Optimal Transportation b
 
 ![Demo](testcases_paper/normal_banana_funnel_swissroll.png)
 
+![Demo](testcases_paper/ocean_color.png)
+
 ## Usage
 
 Here, we provide the most accessible (and not fastest) implementation of the OCD in NumPy. Simply, first import the library via
