@@ -1,37 +1,31 @@
 import torch
 import faiss
 from sklearn.cluster import DBSCAN
+import faiss.contrib.torch_utils  # this enables GPU tensor support
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def rangesearch_faiss(X, radius, k=None):
+def rangesearch_faiss(X, radius, k=2048):
     """
-    FAISS GPU radius search workaround using kNN + filtering.
-    X: torch tensor (N,d) on CUDA
-    radius: float
-    k: int, max neighbors to query (if None, use N)
+    Approximate radius search using FAISS kNN + filtering.
+    Limited to k <= 2048 on GPU.
     """
-    assert X.is_cuda, "X must be on GPU (torch.cuda tensor)"
-    X = X.contiguous()  # FAISS needs contiguous memory
+    assert X.is_cuda
     n, d = X.shape
-    if k is None:
-        k = n  # search all points
 
-    # FAISS GPU index
+    if k is None or k > 2048:
+      k = min(n, 2048)   # FAISS GPU limit
+
     res = faiss.StandardGpuResources()
-    index = faiss.GpuIndexFlatL2(res, d, faiss.METRIC_L2)
-
-    # Add GPU data directly (no .cpu().numpy())
+    index = faiss.GpuIndexFlatL2(res, d)
     index.add(X)
 
-    # Search directly on GPU tensor
-    D, I = index.search(X, k)  
+    D, I = index.search(X, k)   # works on CUDA tensors
+    r2 = radius**2
 
-    # D, I come back as torch tensors on GPU
     neighbors = []
-    radius2 = radius ** 2
     for i in range(n):
-        mask = D[i] <= radius2
+        mask = D[i] <= r2
         neighbors.append(I[i][mask].tolist())
     return neighbors
 
@@ -77,11 +71,11 @@ def compute_cond_vectorized_no_loop(X_m, Y_m, Idx_m, NparticleThreshold=4):
     return y_Cond_x_m
 
 
-def find_nclusters(X, Y, eps):
-    joint = torch.cat([X, Y], dim=1).cpu().numpy()
-    clustering = DBSCAN(eps=eps, min_samples=1).fit(joint)
-    labels = clustering.labels_
-    return len(set(labels)) - (1 if -1 in labels else 0)
+#def find_nclusters(X, Y, eps):
+#    joint = torch.cat([X, Y], dim=1).cpu().numpy()
+#    clustering = DBSCAN(eps=eps, min_samples=1).fit(joint)
+#    labels = clustering.labels_
+#    return len(set(labels)) - (1 if -1 in labels else 0)
 
 def ocd_map(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
                       epsX=None, epsY=None, tol=1e-14,
