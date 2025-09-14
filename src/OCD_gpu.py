@@ -1,37 +1,39 @@
-# src/OCD_gpu_faiss.py
-
 import torch
 import faiss
 from sklearn.cluster import DBSCAN
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
 def rangesearch_faiss(X, radius, k=None):
     """
     FAISS GPU radius search workaround using kNN + filtering.
-    X: torch tensor (N,d)
+    X: torch tensor (N,d) on CUDA
     radius: float
     k: int, max neighbors to query (if None, use N)
     """
-    X_np = X.detach().cpu().numpy().astype('float32')
-    n, d = X_np.shape
+    assert X.is_cuda, "X must be on GPU (torch.cuda tensor)"
+    X = X.contiguous()  # FAISS needs contiguous memory
+    n, d = X.shape
     if k is None:
         k = n  # search all points
 
     # FAISS GPU index
     res = faiss.StandardGpuResources()
-    index = faiss.GpuIndexFlatL2(res, d)
-    index.add(X_np)
+    index = faiss.GpuIndexFlatL2(res, d, faiss.METRIC_L2)
 
-    D, I = index.search(X_np, k)  # kNN search
+    # Add GPU data directly (no .cpu().numpy())
+    index.add(X)
+
+    # Search directly on GPU tensor
+    D, I = index.search(X, k)  
+
+    # D, I come back as torch tensors on GPU
     neighbors = []
     radius2 = radius ** 2
     for i in range(n):
         mask = D[i] <= radius2
         neighbors.append(I[i][mask].tolist())
     return neighbors
-
 
 def compute_cond_vectorized_no_loop(X_m, Y_m, Idx_m, NparticleThreshold=4):
     lens = torch.tensor([len(i) for i in Idx_m], device=device)
