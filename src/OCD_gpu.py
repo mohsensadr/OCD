@@ -181,7 +181,8 @@ def find_opt_eps2_gpu(X0, Y0, log_eps_range=[-3,1], nepss=10, perc=0.95, min_sam
 # === OCD map with Euler method ======================
 # =====================================================
 
-def ocd_map(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
+@torch.no_grad()
+def ocd_map(X, Y, dt=0.01, Nt=1000, sigma=0.1,
             epsX=None, epsY=None, tol=1e-14,
             minNt=100, NparticleThreshold=10, k=2048, device="cuda"):
 
@@ -189,16 +190,6 @@ def ocd_map(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
         epsX = sigma
     if epsY is None:
         epsY = sigma
-
-    if isinstance(X00, torch.Tensor):
-        X = X00.detach().clone().to(device=device, dtype=torch.float32)
-    else:
-        X = torch.tensor(X00, dtype=torch.float32, device=device)
-
-    if isinstance(Y00, torch.Tensor):
-        Y = Y00.detach().clone().to(device=device, dtype=torch.float32)
-    else:
-        Y = torch.tensor(Y00, dtype=torch.float32, device=device)
     
     m2X, m2Y = X.mean(dim=0), Y.mean(dim=0)
     y_Cond_x = torch.zeros_like(X)
@@ -232,27 +223,18 @@ def ocd_map(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
         if it > minNt and abs(dists[-1] - dists[-2]) < tol:
             break
 
-    return X.cpu().numpy(), Y.cpu().numpy(), dists
+    return X, Y, dists
 
 # =====================================================
 # === OCD Map with RK4 integrator =====================
 # =====================================================
 
-def ocd_map_gpu_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
+@torch.no_grad()
+def ocd_map_gpu_RK4(X, Y, dt=0.01, Nt=1000, sigma=0.1,
                          epsX=None, epsY=None, tol=1e-14,
                          minNt=100, NparticleThreshold=10, k=2048, device="cuda"):
     if epsX is None: epsX = sigma
     if epsY is None: epsY = sigma
-
-    if isinstance(X00, torch.Tensor):
-        X = X00.detach().clone().to(device=device, dtype=torch.float32)
-    else:
-        X = torch.tensor(X00, dtype=torch.float32, device=device)
-
-    if isinstance(Y00, torch.Tensor):
-        Y = Y00.detach().clone().to(device=device, dtype=torch.float32)
-    else:
-        Y = torch.tensor(Y00, dtype=torch.float32, device=device)
 
     y_Cond_x = torch.zeros_like(X)
     x_Cond_y = torch.zeros_like(Y)
@@ -315,7 +297,7 @@ def ocd_map_gpu_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
         if it > minNt and abs(dists[-1] - dists[-2]) < tol:
             break
 
-    return X.cpu().numpy(), Y.cpu().numpy(), dists
+    return X, Y, dists
 
 
 '''
