@@ -168,7 +168,7 @@ def ocd_map(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
         if it > minNt and abs(dists[-1] - dists[-2]) < tol:
             break
 
-    return X.cpu().numpy(), Y.cpu().numpy(), dists, err_m2X, err_m2Y
+    return X.cpu().numpy(), Y.cpu().numpy(), dists
 
 # =====================================================
 # === OCD Map with RK4 integrator =====================
