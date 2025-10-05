@@ -175,6 +175,80 @@ def ocd_map(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
 # =====================================================
 
 def ocd_map_gpu_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
+                         epsX=None, epsY=None, tol=1e-14,
+                         minNt=100, NparticleThreshold=10, k=2048, device="cuda"):
+    if epsX is None: epsX = sigma
+    if epsY is None: epsY = sigma
+
+    X = torch.tensor(X00, dtype=torch.float32, device=device)
+    Y = torch.tensor(Y00, dtype=torch.float32, device=device)
+
+    y_Cond_x = torch.zeros_like(X)
+    x_Cond_y = torch.zeros_like(Y)
+    rx, ry = epsX, epsY
+
+    indexX = FaissGpuIndex(X.shape[1], k)
+    indexY = FaissGpuIndex(Y.shape[1], k)
+
+    dists = []
+    for it in range(Nt):
+        X0, Y0 = X, Y
+
+        # ---- Stage 1 ----
+        k1_X = (Y0 - y_Cond_x) * dt
+        k1_Y = (X0 - x_Cond_y) * dt
+
+        # ---- Stage 2 ----
+        X_mid = X0 + 0.5 * k1_X
+        Y_mid = Y0 + 0.5 * k1_Y
+        indexX.reset_and_add(X_mid)
+        indexY.reset_and_add(Y_mid)
+        DX, IX = indexX.search(X_mid)
+        DY, IY = indexY.search(Y_mid)
+        y_Cond_mid = compute_cond_gpu(X_mid, Y_mid, IX, DX, rx, NparticleThreshold)
+        x_Cond_mid = compute_cond_gpu(Y_mid, X_mid, IY, DY, ry, NparticleThreshold)
+        k2_X = (Y_mid - y_Cond_mid) * dt
+        k2_Y = (X_mid - x_Cond_mid) * dt
+
+        # ---- Stage 3 ---- (reuse same mid)
+        X_mid = X0 + 0.5 * k2_X
+        Y_mid = Y0 + 0.5 * k2_Y
+        k3_X, k3_Y = k2_X, k2_Y  # reuse mid-stage estimate
+
+        # ---- Stage 4 ----
+        X_end = X0 + k3_X
+        Y_end = Y0 + k3_Y
+        indexX.reset_and_add(X_end)
+        indexY.reset_and_add(Y_end)
+        DX, IX = indexX.search(X_end)
+        DY, IY = indexY.search(Y_end)
+        y_Cond_end = compute_cond_gpu(X_end, Y_end, IX, DX, rx, NparticleThreshold)
+        x_Cond_end = compute_cond_gpu(Y_end, X_end, IY, DY, ry, NparticleThreshold)
+        k4_X = (Y_end - y_Cond_end) * dt
+        k4_Y = (X_end - x_Cond_end) * dt
+
+        # ---- Update ----
+        X = X0 + (k1_X + 2*k2_X + 2*k3_X + k4_X) / 6
+        Y = Y0 + (k1_Y + 2*k2_Y + 2*k3_Y + k4_Y) / 6
+
+        # ---- One final cond ----
+        indexX.reset_and_add(X)
+        indexY.reset_and_add(Y)
+        DX, IX = indexX.search(X)
+        DY, IY = indexY.search(Y)
+        y_Cond_x = compute_cond_gpu(X, Y, IX, DX, rx, NparticleThreshold)
+        x_Cond_y = compute_cond_gpu(Y, X, IY, DY, ry, NparticleThreshold)
+
+        dists.append(torch.sum((X - Y) ** 2, dim=1).mean().item())
+
+        if it > minNt and abs(dists[-1] - dists[-2]) < tol:
+            break
+
+    return X.cpu().numpy(), Y.cpu().numpy(), dists
+
+
+'''
+def ocd_map_gpu_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
                     epsX=None, epsY=None, tol=1e-14,
                     minNt=100, NparticleThreshold=10, k=2048, device="cuda"):
     if epsX is None:
@@ -258,5 +332,5 @@ def ocd_map_gpu_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
             break
 
     return X.cpu().numpy(), Y.cpu().numpy(), dists, err_m2X, err_m2Y
-
+'''
 
