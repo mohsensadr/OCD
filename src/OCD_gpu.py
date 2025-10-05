@@ -1,85 +1,134 @@
 import torch
+import cupy as cp
+from cuml.cluster import DBSCAN
 import faiss
-from sklearn.cluster import DBSCAN
-import faiss.contrib.torch_utils  # this enables GPU tensor support
+import faiss.contrib.torch_utils  # enables torch<->faiss GPU tensors
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# =====================================================
+# === FAISS GPU index wrapper =========================
+# =====================================================
 
-def rangesearch_faiss(X, radius, k=2048):
+class FaissGpuIndex:
+    """Reusable FAISS GPU index for repeated neighbor queries."""
+    def __init__(self, dim, k=2048):
+        self.dim = dim
+        self.k = min(k, 2048)
+        self.res = faiss.StandardGpuResources()
+        self.index = faiss.GpuIndexFlatL2(self.res, dim)
+        self._n = 0
+
+    def reset_and_add(self, X):
+        if not X.is_contiguous():
+            X = X.contiguous()
+        try:
+            self.index.reset()
+        except Exception:
+            self.index = faiss.GpuIndexFlatL2(self.res, self.dim)
+        self.index.add(X)
+        self._n = X.shape[0]
+
+    def search(self, X, k=None):
+        if k is None:
+            k = self.k
+        k = min(k, self._n)
+        D, I = self.index.search(X, k)
+        return D, I
+
+# =====================================================
+# === Vectorized conditional expectation ============
+# =====================================================
+
+def compute_cond_gpu(X, Y, I, D, radius, NparticleThreshold=4, eps_reg=1e-6, device="cuda"):
     """
-    Approximate radius search using FAISS kNN + filtering.
-    Limited to k <= 2048 on GPU.
+    Compute conditional expectation vectorized on GPU.
     """
-    assert X.is_cuda
-    n, d = X.shape
+    N, d = X.shape
+    r2 = radius ** 2
 
-    if k is None or k > 2048:
-      k = min(n, 2048)   # FAISS GPU limit
+    mask = D <= r2
+    lens = mask.sum(dim=1)
+    valid = lens > 0
+    max_len = lens.max().item()
 
-    res = faiss.StandardGpuResources()
-    index = faiss.GpuIndexFlatL2(res, d)
-    index.add(X)
+    I_masked = torch.where(mask, I, torch.full_like(I, -1))
+    pad_idx = I_masked.clone()
+    pad_idx[pad_idx < 0] = 0
+    Xn = X[pad_idx]
+    Yn = Y[pad_idx]
+    mask3 = mask.unsqueeze(2)
+    Xn = Xn * mask3
+    Yn = Yn * mask3
 
-    D, I = index.search(X, k)   # works on CUDA tensors
-    r2 = radius**2
+    lens_f = lens.clamp(min=1).float().unsqueeze(1)
+    X_mean = Xn.sum(dim=1) / lens_f
+    Y_mean = Yn.sum(dim=1) / lens_f
+    y_Cond = Y_mean.clone()
 
-    neighbors = []
-    for i in range(n):
-        mask = D[i] <= r2
-        neighbors.append(I[i][mask].tolist())
-    return neighbors
+    valid_big = lens > NparticleThreshold
+    if valid_big.any():
+        vb = valid_big.nonzero(as_tuple=False).squeeze(1)
+        Xc = Xn[vb] - X_mean[vb].unsqueeze(1)
+        Yc = Yn[vb] - Y_mean[vb].unsqueeze(1)
+        maskb = mask[vb].unsqueeze(2)
+        Xc_mask = Xc * maskb
+        Yc_mask = Yc * maskb
+        J = torch.matmul(Xc_mask.transpose(1, 2), Yc_mask) / lens_f[vb].unsqueeze(2)
+        Sigma = torch.matmul(Xc_mask.transpose(1, 2), Xc_mask) / lens_f[vb].unsqueeze(2)
+        Iden = torch.eye(d, device=device).unsqueeze(0).expand(J.shape)
+        Sigma_reg = Sigma + eps_reg * Iden
+        Sigma_inv = torch.linalg.solve(Sigma_reg, Iden)
+        X_diff = (X[vb] - X_mean[vb]).unsqueeze(2)
+        correction = torch.bmm(J @ Sigma_inv, X_diff).squeeze(2)
+        y_Cond[vb] = Y_mean[vb] + correction
 
-def compute_cond_vectorized_no_loop(X_m, Y_m, Idx_m, NparticleThreshold=4):
-    lens = torch.tensor([len(i) for i in Idx_m], device=device)
-    flat_idx = torch.cat([torch.tensor(i, device=device) for i in Idx_m])
-    repeats = torch.repeat_interleave(torch.arange(len(Idx_m), device=device), lens)
+    return y_Cond
 
-    X_means = torch.zeros((len(Idx_m), X_m.shape[1]), device=device)
-    Y_means = torch.zeros((len(Idx_m), Y_m.shape[1]), device=device)
-    start = 0
-    for i, l in enumerate(lens):
-        idxs = flat_idx[start:start + l]
-        X_means[i] = X_m[idxs].mean(dim=0)
-        Y_means[i] = Y_m[idxs].mean(dim=0)
-        start += l
+# =====================================================
+# === GPU DBSCAN clustering ==========================
+# =====================================================
 
-    y_Cond_x_m = Y_means.clone()
-    valid_idx = lens > NparticleThreshold
+def find_nclusters_cuml(X, Y, eps, min_samples=1):
+    """
+    Count clusters using cuML DBSCAN on GPU.
+    X, Y: torch.Tensor on GPU
+    eps: radius
+    """
+    joint = torch.cat([X, Y], dim=1).contiguous()
+    joint_cp = cp.asarray(joint)
+    db = DBSCAN(eps=eps, min_samples=min_samples)
+    labels = db.fit_predict(joint_cp)
+    n_clusters = int(labels.max().item() + 1)
+    return n_clusters
 
-    if valid_idx.any():
-        X_centered = X_m[flat_idx] - X_means[repeats]
-        Y_centered = Y_m[flat_idx] - Y_means[repeats]
+# =====================================================
+# === GPU optimal epsilon finder =====================
+# =====================================================
 
-        d = X_m.shape[1]
-        J = torch.zeros((len(Idx_m), d, d), device=device)
-        Sigma = torch.zeros((len(Idx_m), d, d), device=device)
-        start = 0
-        for i, l in enumerate(lens):
-            idxs = slice(start, start + l)
-            Xi = X_centered[idxs].unsqueeze(2)
-            Yi = Y_centered[idxs].unsqueeze(1)
-            J[i] = (Xi @ Yi).mean(dim=0)
-            Sigma[i] = (Xi @ Xi.transpose(1, 2)).mean(dim=0)
-            start += l
+def find_opt_eps2_gpu(X0, Y0, log_eps_range=[-3,1], nepss=10, perc=0.95, min_samples=1):
+    device = X0.device if isinstance(X0, torch.Tensor) else "cuda"
+    X0 = X0.to(device) if torch.is_tensor(X0) else torch.tensor(X0, device=device, dtype=torch.float32)
+    Y0 = Y0.to(device) if torch.is_tensor(Y0) else torch.tensor(Y0, device=device, dtype=torch.float32)
 
-        for i, valid in enumerate(valid_idx):
-            if valid:
-                sigma_inv = torch.pinverse(Sigma[i])
-                X_diff = X_m[i] - X_means[i]
-                y_Cond_x_m[i] = Y_means[i] + (J[i] @ sigma_inv @ X_diff)
+    N = X0.shape[0]
+    epss = torch.logspace(log_eps_range[0], log_eps_range[1], nepss, device=device)
+    eps0 = epss[-1].item()
 
-    return y_Cond_x_m
+    for eps in epss:
+        eps_val = eps.item()
+        n_clusters = find_nclusters_cuml(X0, Y0, eps_val, min_samples)
+        if n_clusters < perc * N:
+            eps0 = eps_val
+            break
+    return eps0
 
-
-#def find_nclusters(X, Y, eps):
-#    joint = torch.cat([X, Y], dim=1).cpu().numpy()
-#    clustering = DBSCAN(eps=eps, min_samples=1).fit(joint)
-#    labels = clustering.labels_
-#    return len(set(labels)) - (1 if -1 in labels else 0)
+# =====================================================
+# === OCD map with Euler method ======================
+# =====================================================
 
 def ocd_map(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
-                      epsX=None, epsY=None, tol=1e-14,
-                      minNt=100, NparticleThreshold=10, k=None):
+            epsX=None, epsY=None, tol=1e-14,
+            minNt=100, NparticleThreshold=10, k=2048, device="cuda"):
+
     if epsX is None:
         epsX = sigma
     if epsY is None:
@@ -87,47 +136,47 @@ def ocd_map(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
 
     X = torch.tensor(X00, dtype=torch.float32, device=device)
     Y = torch.tensor(Y00, dtype=torch.float32, device=device)
-    m2X = X.mean(dim=0)
-    m2Y = Y.mean(dim=0)
-
+    m2X, m2Y = X.mean(dim=0), Y.mean(dim=0)
     y_Cond_x = torch.zeros_like(X)
     x_Cond_y = torch.zeros_like(Y)
 
     dists = [torch.sum((X - Y) ** 2, dim=1).mean().item()]
-    err_m2X = []
-    err_m2Y = []
+    err_m2X, err_m2Y = [], []
+    rx, ry = epsX, epsY
 
-    rx = epsX
-    ry = epsY
+    indexX = FaissGpuIndex(X.shape[1], k)
+    indexY = FaissGpuIndex(Y.shape[1], k)
 
     for it in range(Nt):
         err_m2X.append((m2X - X.mean(dim=0)).abs().cpu().numpy())
         err_m2Y.append((m2Y - Y.mean(dim=0)).abs().cpu().numpy())
 
-        X0 = X.clone()
-        Y0 = Y.clone()
-
+        X0, Y0 = X.clone(), Y.clone()
         X = X0 + (Y0 - y_Cond_x) * dt
         Y = Y0 + (X0 - x_Cond_y) * dt
 
-        Idx = rangesearch_faiss(X, rx, k=k)
-        Idy = rangesearch_faiss(Y, ry, k=k)
+        indexX.reset_and_add(X)
+        indexY.reset_and_add(Y)
+        DX, IX = indexX.search(X)
+        DY, IY = indexY.search(Y)
+        y_Cond_x = compute_cond_gpu(X, Y, IX, DX, rx, NparticleThreshold)
+        x_Cond_y = compute_cond_gpu(Y, X, IY, DY, ry, NparticleThreshold)
 
-        y_Cond_x = compute_cond_vectorized_no_loop(X, Y, Idx, NparticleThreshold)
-        x_Cond_y = compute_cond_vectorized_no_loop(Y, X, Idy, NparticleThreshold)
+        dist = torch.sum((X - Y) ** 2, dim=1).mean().item()
+        dists.append(dist)
 
-        dists.append(torch.sum((X - Y) ** 2, dim=1).mean().item())
         if it > minNt and abs(dists[-1] - dists[-2]) < tol:
             break
 
     return X.cpu().numpy(), Y.cpu().numpy(), dists, err_m2X, err_m2Y
 
-def ocd_map_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
-                          epsX=None, epsY=None, tol=1e-14,
-                          minNt=100, NparticleThreshold=10, k=None):
-    """
-    OCD map using RK4 integration (GPU + FAISS)
-    """
+# =====================================================
+# === OCD Map with RK4 integrator =====================
+# =====================================================
+
+def ocd_map_gpu_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
+                    epsX=None, epsY=None, tol=1e-14,
+                    minNt=100, NparticleThreshold=10, k=2048, device="cuda"):
     if epsX is None:
         epsX = sigma
     if epsY is None:
@@ -135,67 +184,79 @@ def ocd_map_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
 
     X = torch.tensor(X00, dtype=torch.float32, device=device)
     Y = torch.tensor(Y00, dtype=torch.float32, device=device)
+
     m2X = X.mean(dim=0)
     m2Y = Y.mean(dim=0)
-
     y_Cond_x = torch.zeros_like(X)
     x_Cond_y = torch.zeros_like(Y)
 
     dists = [torch.sum((X - Y) ** 2, dim=1).mean().item()]
-    err_m2X = []
-    err_m2Y = []
+    err_m2X, err_m2Y = [], []
 
-    rx = epsX
-    ry = epsY
+    rx, ry = epsX, epsY
+
+    indexX = FaissGpuIndex(X.shape[1], k)
+    indexY = FaissGpuIndex(Y.shape[1], k)
 
     for it in range(Nt):
         err_m2X.append((m2X - X.mean(dim=0)).abs().cpu().numpy())
         err_m2Y.append((m2Y - Y.mean(dim=0)).abs().cpu().numpy())
 
-        X0 = X.clone()
-        Y0 = Y.clone()
+        X0, Y0 = X.clone(), Y.clone()
 
-        # RK4 steps
+        # --- RK4 step ---
         k1_X = (Y0 - y_Cond_x) * dt
         k1_Y = (X0 - x_Cond_y) * dt
 
         X_mid = X0 + 0.5 * k1_X
         Y_mid = Y0 + 0.5 * k1_Y
-        Idx_mid = rangesearch_faiss(X_mid, rx, k=k)
-        Idy_mid = rangesearch_faiss(Y_mid, ry, k=k)
-        y_Cond_x_mid = compute_cond_vectorized_no_loop(X_mid, Y_mid, Idx_mid, NparticleThreshold)
-        x_Cond_y_mid = compute_cond_vectorized_no_loop(Y_mid, X_mid, Idy_mid, NparticleThreshold)
-        k2_X = (Y_mid - y_Cond_x_mid) * dt
-        k2_Y = (X_mid - x_Cond_y_mid) * dt
+        indexX.reset_and_add(X_mid)
+        indexY.reset_and_add(Y_mid)
+        DX, IX = indexX.search(X_mid)
+        DY, IY = indexY.search(Y_mid)
+        y_Cond_mid = compute_cond_gpu(X_mid, Y_mid, IX, DX, rx, NparticleThreshold)
+        x_Cond_mid = compute_cond_gpu(Y_mid, X_mid, IY, DY, ry, NparticleThreshold)
+        k2_X = (Y_mid - y_Cond_mid) * dt
+        k2_Y = (X_mid - x_Cond_mid) * dt
 
         X_mid = X0 + 0.5 * k2_X
         Y_mid = Y0 + 0.5 * k2_Y
-        Idx_mid = rangesearch_faiss(X_mid, rx, k=k)
-        Idy_mid = rangesearch_faiss(Y_mid, ry, k=k)
-        y_Cond_x_mid = compute_cond_vectorized_no_loop(X_mid, Y_mid, Idx_mid, NparticleThreshold)
-        x_Cond_y_mid = compute_cond_vectorized_no_loop(Y_mid, X_mid, Idy_mid, NparticleThreshold)
-        k3_X = (Y_mid - y_Cond_x_mid) * dt
-        k3_Y = (X_mid - x_Cond_y_mid) * dt
+        indexX.reset_and_add(X_mid)
+        indexY.reset_and_add(Y_mid)
+        DX, IX = indexX.search(X_mid)
+        DY, IY = indexY.search(Y_mid)
+        y_Cond_mid = compute_cond_gpu(X_mid, Y_mid, IX, DX, rx, NparticleThreshold)
+        x_Cond_mid = compute_cond_gpu(Y_mid, X_mid, IY, DY, ry, NparticleThreshold)
+        k3_X = (Y_mid - y_Cond_mid) * dt
+        k3_Y = (X_mid - x_Cond_mid) * dt
 
         X_end = X0 + k3_X
         Y_end = Y0 + k3_Y
-        Idx_end = rangesearch_faiss(X_end, rx, k=k)
-        Idy_end = rangesearch_faiss(Y_end, ry, k=k)
-        y_Cond_x_end = compute_cond_vectorized_no_loop(X_end, Y_end, Idx_end, NparticleThreshold)
-        x_Cond_y_end = compute_cond_vectorized_no_loop(Y_end, X_end, Idy_end, NparticleThreshold)
-        k4_X = (Y_end - y_Cond_x_end) * dt
-        k4_Y = (X_end - x_Cond_y_end) * dt
+        indexX.reset_and_add(X_end)
+        indexY.reset_and_add(Y_end)
+        DX, IX = indexX.search(X_end)
+        DY, IY = indexY.search(Y_end)
+        y_Cond_end = compute_cond_gpu(X_end, Y_end, IX, DX, rx, NparticleThreshold)
+        x_Cond_end = compute_cond_gpu(Y_end, X_end, IY, DY, ry, NparticleThreshold)
+        k4_X = (Y_end - y_Cond_end) * dt
+        k4_Y = (X_end - x_Cond_end) * dt
 
-        X = X0 + (k1_X + 2 * k2_X + 2 * k3_X + k4_X) / 6
-        Y = Y0 + (k1_Y + 2 * k2_Y + 2 * k3_Y + k4_Y) / 6
+        X = X0 + (k1_X + 2*k2_X + 2*k3_X + k4_X) / 6
+        Y = Y0 + (k1_Y + 2*k2_Y + 2*k3_Y + k4_Y) / 6
 
-        Idx = rangesearch_faiss(X, rx, k=k)
-        Idy = rangesearch_faiss(Y, ry, k=k)
-        y_Cond_x = compute_cond_vectorized_no_loop(X, Y, Idx, NparticleThreshold)
-        x_Cond_y = compute_cond_vectorized_no_loop(Y, X, Idy, NparticleThreshold)
+        indexX.reset_and_add(X)
+        indexY.reset_and_add(Y)
+        DX, IX = indexX.search(X)
+        DY, IY = indexY.search(Y)
+        y_Cond_x = compute_cond_gpu(X, Y, IX, DX, rx, NparticleThreshold)
+        x_Cond_y = compute_cond_gpu(Y, X, IY, DY, ry, NparticleThreshold)
 
-        dists.append(torch.sum((X - Y) ** 2, dim=1).mean().item())
+        dist = torch.sum((X - Y) ** 2, dim=1).mean().item()
+        dists.append(dist)
+
         if it > minNt and abs(dists[-1] - dists[-2]) < tol:
             break
 
     return X.cpu().numpy(), Y.cpu().numpy(), dists, err_m2X, err_m2Y
+
+
