@@ -87,6 +87,61 @@ def compute_cond_gpu(X, Y, I, D, radius, NparticleThreshold=4, eps_reg=1e-6, dev
 # === GPU DBSCAN clustering ==========================
 # =====================================================
 
+def find_nclusters_cuml(
+    X, Y, eps, min_samples=1,
+    use_float64=False, max_mbytes_per_batch=None, verbose=False
+):
+    """
+    Count clusters using cuML DBSCAN on GPU.
+    Compatible with cuML 25.06.00 (and later versions).
+
+    Parameters
+    ----------
+    X, Y : torch.Tensor (on GPU)
+        Input feature tensors.
+    eps : float
+        Neighborhood radius for DBSCAN.
+    min_samples : int
+        Minimum samples to form a cluster.
+    use_float64 : bool
+        Use double precision (slower but higher capacity).
+    max_mbytes_per_batch : int or None
+        Limit for pairwise distance memory usage.
+    verbose : bool
+        Print cuML logs.
+    """
+    # --- Concatenate data ---
+    joint = torch.cat([X, Y], dim=1).contiguous()
+    dtype = cp.float64 if use_float64 else cp.float32
+    joint_cp = cp.asarray(joint, dtype=dtype)
+
+    # --- Initialize cuML DBSCAN ---
+    db = DBSCAN(
+        eps=eps,
+        min_samples=min_samples,
+        algorithm="brute",
+        max_mbytes_per_batch=max_mbytes_per_batch,
+        calc_core_sample_indices=False,
+        verbose=verbose
+    )
+
+    # --- Run clustering ---
+    # NOTE: out_dtype must be passed to fit(), not __init__() in cuML 25.06
+    # Decide automatically whether to use int32 or int64
+    if joint_cp.shape[0] < 64000:
+        out_dtype = "int32"  # fits safely
+    else:
+        out_dtype = "int64"
+
+    labels = db.fit_predict(joint_cp, out_dtype=out_dtype)
+
+    if labels.size == 0 or cp.max(labels) < 0:
+        return 0
+
+    n_clusters = int(cp.max(labels).item() + 1)
+    return n_clusters
+
+'''
 def find_nclusters_cuml(X, Y, eps, min_samples=1):
     """
     Count clusters using cuML DBSCAN on GPU.
@@ -95,10 +150,11 @@ def find_nclusters_cuml(X, Y, eps, min_samples=1):
     """
     joint = torch.cat([X, Y], dim=1).contiguous()
     joint_cp = cp.asarray(joint)
-    db = DBSCAN(eps=eps, min_samples=min_samples)
+    db = DBSCAN(eps=eps, min_samples=min_samples, index_dtype='int64')
     labels = db.fit_predict(joint_cp)
     n_clusters = int(labels.max().item() + 1)
     return n_clusters
+'''
 
 # =====================================================
 # === GPU optimal epsilon finder =====================
@@ -134,8 +190,16 @@ def ocd_map(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
     if epsY is None:
         epsY = sigma
 
-    X = torch.tensor(X00, dtype=torch.float32, device=device)
-    Y = torch.tensor(Y00, dtype=torch.float32, device=device)
+    if isinstance(X00, torch.Tensor):
+        X = X00.detach().clone().to(device=device, dtype=torch.float32)
+    else:
+        X = torch.tensor(X00, dtype=torch.float32, device=device)
+
+    if isinstance(Y00, torch.Tensor):
+        Y = Y00.detach().clone().to(device=device, dtype=torch.float32)
+    else:
+        Y = torch.tensor(Y00, dtype=torch.float32, device=device)
+    
     m2X, m2Y = X.mean(dim=0), Y.mean(dim=0)
     y_Cond_x = torch.zeros_like(X)
     x_Cond_y = torch.zeros_like(Y)
@@ -180,8 +244,15 @@ def ocd_map_gpu_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1,
     if epsX is None: epsX = sigma
     if epsY is None: epsY = sigma
 
-    X = torch.tensor(X00, dtype=torch.float32, device=device)
-    Y = torch.tensor(Y00, dtype=torch.float32, device=device)
+    if isinstance(X00, torch.Tensor):
+        X = X00.detach().clone().to(device=device, dtype=torch.float32)
+    else:
+        X = torch.tensor(X00, dtype=torch.float32, device=device)
+
+    if isinstance(Y00, torch.Tensor):
+        Y = Y00.detach().clone().to(device=device, dtype=torch.float32)
+    else:
+        Y = torch.tensor(Y00, dtype=torch.float32, device=device)
 
     y_Cond_x = torch.zeros_like(X)
     x_Cond_y = torch.zeros_like(Y)
