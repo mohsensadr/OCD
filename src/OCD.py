@@ -26,8 +26,8 @@ def compute_cond(idx, y):
     
     return avg
 
-def compute_cond_vectorized_no_loop(X_m, Y_m, Idx_m, NparticleThreshold = 4):
-    ## This function computes piecewise linear approximation to the conditional expectation
+def compute_cond_vectorized_no_loop(X_m, Y_m, Idx_m, NparticleThreshold = 4, method="linear"):
+    ## This function computes piecewise constant or linear approximation to the conditional expectation
 
     # Flatten idx_m and create an offset array
     flat_idx = np.concatenate(Idx_m)
@@ -43,26 +43,28 @@ def compute_cond_vectorized_no_loop(X_m, Y_m, Idx_m, NparticleThreshold = 4):
     # Initialize the result array with Y_m_means
     y_Cond_x_m = Y_m_means.copy()
 
-    # Handle cases with more than one neighbor
-    valid_idx = lens > NparticleThreshold
+    if method == "linear":
 
-    if np.any(valid_idx):
-        # Centering X_m and Y_m for valid indices
-        X_m_centered = X_m[flat_idx] - X_m_means[repeats]
-        Y_m_centered = Y_m[flat_idx] - Y_m_means[repeats]
-        
-        # Compute J_idx and sigma_x for valid indices
-        J_idx = np.add.reduceat(X_m_centered[:, :, None] * Y_m_centered[:, None, :], np.r_[0, np.cumsum(lens[:-1])]) / lens[:, None, None]
-        sigma_x = np.add.reduceat(X_m_centered[:, :, None] * X_m_centered[:, None, :], np.r_[0, np.cumsum(lens[:-1])]) / lens[:, None, None]
-        
-        # Inverse of sigma_x (using pseudo-inverse to handle singular matrices)
-        sigma_x_inv = np.linalg.pinv(sigma_x[valid_idx])
+        # Handle cases with more than one neighbor
+        valid_idx = lens > NparticleThreshold
 
-        # Compute X_m difference for valid indices
-        X_m_diff = X_m[valid_idx] - X_m_means[valid_idx]
-        
-        # Compute the conditional expectations y_Cond_x for valid indices
-        y_Cond_x_m[valid_idx] = Y_m_means[valid_idx] + np.einsum('ijk,ik->ij', J_idx[valid_idx] @ sigma_x_inv, X_m_diff)
+        if np.any(valid_idx):
+            # Centering X_m and Y_m for valid indices
+            X_m_centered = X_m[flat_idx] - X_m_means[repeats]
+            Y_m_centered = Y_m[flat_idx] - Y_m_means[repeats]
+            
+            # Compute J_idx and sigma_x for valid indices
+            J_idx = np.add.reduceat(X_m_centered[:, :, None] * Y_m_centered[:, None, :], np.r_[0, np.cumsum(lens[:-1])]) / lens[:, None, None]
+            sigma_x = np.add.reduceat(X_m_centered[:, :, None] * X_m_centered[:, None, :], np.r_[0, np.cumsum(lens[:-1])]) / lens[:, None, None]
+            
+            # Inverse of sigma_x (using pseudo-inverse to handle singular matrices)
+            sigma_x_inv = np.linalg.pinv(sigma_x[valid_idx])
+
+            # Compute X_m difference for valid indices
+            X_m_diff = X_m[valid_idx] - X_m_means[valid_idx]
+            
+            # Compute the conditional expectations y_Cond_x for valid indices
+            y_Cond_x_m[valid_idx] = Y_m_means[valid_idx] + np.einsum('ijk,ik->ij', J_idx[valid_idx] @ sigma_x_inv, X_m_diff)
 
     return y_Cond_x_m
 
@@ -105,7 +107,7 @@ def find_opt_eps2(X0, Y0, log_eps_range=[-3,1], nepss = 10, perc=0.95):
             break
     return eps0
     
-def ocd_map(X00, Y00, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol=1e-14, minNt = 100, NparticleThreshold=10):
+def ocd_map(X00, Y00, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol=1e-14, minNt = 100, NparticleThreshold=10, method="linear"):
     ## This function finds the map between X and Y by solving OCD dynamics using Euler method
     # inputs: X: (N,dim),
     #         Y: (Np,dim),
@@ -114,8 +116,10 @@ def ocd_map(X00, Y00, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol=1e-
     #         sigma: the kernel bandwidth for computing conditional expectation
     #         tol: convergence tolerance
     #         minNt: minimum number of iterations
+    #         method: method of computing conditional expectation, piecewise "constant" or "linear"
     #         NparticleThreshold: number of particles as the threshold to switch between 
     #                             piecewse constant and linear approximation of conditional expectation
+    #                             if the method is "linear"
     # outputs: X (N,dim),
     #          Y (Np,dim)
     #          dists: history of W2 distance
@@ -160,8 +164,8 @@ def ocd_map(X00, Y00, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol=1e-
         Idx = rangesearch(X, rx)
         Idy = rangesearch(Y, ry)
         
-        y_Cond_x = compute_cond_vectorized_no_loop(X, Y, Idx, NparticleThreshold)
-        x_Cond_y = compute_cond_vectorized_no_loop(Y, X, Idy, NparticleThreshold)
+        y_Cond_x = compute_cond_vectorized_no_loop(X, Y, Idx, NparticleThreshold, method)
+        x_Cond_y = compute_cond_vectorized_no_loop(Y, X, Idy, NparticleThreshold, method)
         
         ## keep a history of W2 distance
         dists.append(np.mean(np.sum((X - Y) ** 2, axis=1)))
@@ -170,7 +174,7 @@ def ocd_map(X00, Y00, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol=1e-
                 break
     return X, Y, dists, err_m2X, err_m2Y
 
-def ocd_map_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol=1e-14, minNt = 100, NparticleThreshold=10):
+def ocd_map_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol=1e-14, minNt = 100, NparticleThreshold=10, method="linear"):
     ## This function finds the map between X and Y by solving OCD dynamics using RK4
     # inputs: X: (N,dim),
     #         Y: (Np,dim),
@@ -179,8 +183,10 @@ def ocd_map_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol
     #         sigma: the kernel bandwidth for computing conditional expectation
     #         tol: convergence tolerance
     #         minNt: minimum number of iterations
+    #         method: method of computing conditional expectation, piecewise "constant" or "linear"
     #         NparticleThreshold: number of particles as the threshold to switch between 
     #                             piecewse constant and linear approximation of conditional expectation
+    #                             if the method is "linear"
     # outputs: X (N,dim),
     #          Y (Np,dim)
     #          dists: history of W2 distance
@@ -223,24 +229,24 @@ def ocd_map_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol
         Y_mid = Y0 + 0.5 * k1_Y
         Idx_mid = rangesearch(X_mid, rx)
         Idy_mid = rangesearch(Y_mid, ry)
-        y_Cond_x_mid = compute_cond_vectorized_no_loop(X_mid, Y_mid, Idx_mid, NparticleThreshold)
-        x_Cond_y_mid = compute_cond_vectorized_no_loop(Y_mid, X_mid, Idy_mid, NparticleThreshold)
+        y_Cond_x_mid = compute_cond_vectorized_no_loop(X_mid, Y_mid, Idx_mid, NparticleThreshold, method)
+        x_Cond_y_mid = compute_cond_vectorized_no_loop(Y_mid, X_mid, Idy_mid, NparticleThreshold, method)
         k2_X = (Y_mid - y_Cond_x_mid) * dt 
         k2_Y = (X_mid - x_Cond_y_mid) * dt
         X_mid = X0 + 0.5 * k2_X
         Y_mid = Y0 + 0.5 * k2_Y
         Idx_mid = rangesearch(X_mid, rx)
         Idy_mid = rangesearch(Y_mid, ry)
-        y_Cond_x_mid = compute_cond_vectorized_no_loop(X_mid, Y_mid, Idx_mid, NparticleThreshold)
-        x_Cond_y_mid = compute_cond_vectorized_no_loop(Y_mid, X_mid, Idy_mid, NparticleThreshold)
+        y_Cond_x_mid = compute_cond_vectorized_no_loop(X_mid, Y_mid, Idx_mid, NparticleThreshold, method)
+        x_Cond_y_mid = compute_cond_vectorized_no_loop(Y_mid, X_mid, Idy_mid, NparticleThreshold, method)
         k3_X = (Y_mid - y_Cond_x_mid) * dt
         k3_Y = (X_mid - x_Cond_y_mid) * dt
         X_end = X0 + k3_X
         Y_end = Y0 + k3_Y
         Idx_end = rangesearch(X_end, rx)
         Idy_end = rangesearch(Y_end, ry)
-        y_Cond_x_end = compute_cond_vectorized_no_loop(X_end, Y_end, Idx_end, NparticleThreshold)
-        x_Cond_y_end = compute_cond_vectorized_no_loop(Y_end, X_end, Idy_end, NparticleThreshold)
+        y_Cond_x_end = compute_cond_vectorized_no_loop(X_end, Y_end, Idx_end, NparticleThreshold, method)
+        x_Cond_y_end = compute_cond_vectorized_no_loop(Y_end, X_end, Idy_end, NparticleThreshold, method)
         k4_X = (Y_end - y_Cond_x_end) * dt
         k4_Y = (X_end - x_Cond_y_end) * dt
         X = X0 + (k1_X + 2*k2_X + 2*k3_X + k4_X) / 6
@@ -248,8 +254,8 @@ def ocd_map_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol
         
         Idx = rangesearch(X, rx)
         Idy = rangesearch(Y, ry)
-        y_Cond_x = compute_cond_vectorized_no_loop(X, Y, Idx, NparticleThreshold) 
-        x_Cond_y = compute_cond_vectorized_no_loop(Y, X, Idy, NparticleThreshold)
+        y_Cond_x = compute_cond_vectorized_no_loop(X, Y, Idx, NparticleThreshold, method) 
+        x_Cond_y = compute_cond_vectorized_no_loop(Y, X, Idy, NparticleThreshold, method)
         
         ## keep a history of W2 distance
         dists.append(np.mean(np.sum((X - Y) ** 2, axis=1)))
