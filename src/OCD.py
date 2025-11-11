@@ -184,7 +184,7 @@ def ocd_map_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None,
     #                             piecewse constant and linear approximation of conditional expectation
     # outputs: X (N,dim),
     #          Y (Np,dim)
-    #          dists: history of W2 distance
+    #          dists: history of Wp distance
     #          err_m2X, err_m2Y: history of the error in 2nd order moments for X and Y
     if epsX is None:
         epsX = sigma
@@ -229,7 +229,7 @@ def ocd_map_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None,
         gradcx_Cond_x = compute_cond_vectorized_no_loop(X, p*(X-Y)**(p-1), Idx, NparticleThreshold)
         gradcy_Cond_y = compute_cond_vectorized_no_loop(Y, p*(Y-X)**(p-1), Idy, NparticleThreshold)
         
-        ## keep a history of W2 distance
+        ## keep a history of Wp distance
         dists.append(np.mean(np.sum((X - Y) ** p, axis=1)))
         if it>minNt:
             if abs(dists[it+1]-dists[it]) < tol:
@@ -338,7 +338,7 @@ def ocd_map_RK4_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=N
     #                             piecewse constant and linear approximation of conditional expectation
     # outputs: X (N,dim),
     #          Y (Np,dim)
-    #          dists: history of W2 distance
+    #          dists: history of Wp distance
     #          err_m2X, err_m2Y: history of the error in 2nd order moments for X and Y
     if epsX is None:
         epsX = sigma
@@ -406,7 +406,7 @@ def ocd_map_RK4_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=N
         gradcx_Cond_x = compute_cond_vectorized_no_loop(X, p*(X-Y)**(p-1), Idx, NparticleThreshold) 
         gradcy_Cond_y = compute_cond_vectorized_no_loop(Y, p*(Y-X)**(p-1), Idy, NparticleThreshold)
 
-        ## keep a history of W2 distance
+        ## keep a history of Wp distance
         dists.append(np.mean(np.sum((X - Y) ** p, axis=1)))
         if it>minNt:
             if abs(dists[it+1]-dists[it]) < tol:
