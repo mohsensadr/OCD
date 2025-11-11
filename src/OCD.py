@@ -204,7 +204,7 @@ def ocd_map_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None,
     err_m2X = []
     err_m2Y = []
     dists = []
-    dists.append(np.mean(np.sum((X - Y) ** 2, axis=1)))
+    dists.append(np.mean(np.sum((X - Y) ** p, axis=1)))
     
     rx = epsX
     ry = epsY
@@ -358,7 +358,7 @@ def ocd_map_RK4_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=N
     err_m2X = []
     err_m2Y = []
     dists = []
-    dists.append(np.mean(np.sum((X - Y) ** 2, axis=1)))
+    dists.append(np.mean(np.sum((X - Y) ** p, axis=1)))
     
     rx = epsX
     ry = epsY
