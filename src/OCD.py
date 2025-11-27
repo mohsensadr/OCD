@@ -174,7 +174,7 @@ def ocd_map(X00, Y00, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol=1e-
                 break
     return X, Y, dists, err_m2X, err_m2Y
 
-def ocd_map_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol=1e-14, minNt = 100, NparticleThreshold=10):
+def ocd_map_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol=1e-14, minNt = 100, method="constant", NparticleThreshold=10):
     ## This function finds the map between X and Y by solving OCD dynamics using Euler method
     # inputs: X: (N,dim),
     #         Y: (Np,dim),
@@ -184,6 +184,7 @@ def ocd_map_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None,
     #         sigma: the kernel bandwidth for computing conditional expectation
     #         tol: convergence tolerance
     #         minNt: minimum number of iterations
+    #         method: method of computing conditional expectation, piecewise "constant" or "linear"
     #         NparticleThreshold: number of particles as the threshold to switch between 
     #                             piecewse constant and linear approximation of conditional expectation
     # outputs: X (N,dim),
@@ -229,10 +230,10 @@ def ocd_map_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None,
         # Finding neighbors of X in eps
         Idx = rangesearch(X, rx)
         Idy = rangesearch(Y, ry)
-        
-        gradcx_Cond_x = compute_cond_vectorized_no_loop(X, p*(X-Y)**(p-1), Idx, NparticleThreshold)
-        gradcy_Cond_y = compute_cond_vectorized_no_loop(Y, p*(Y-X)**(p-1), Idy, NparticleThreshold)
-        
+
+        gradcx_Cond_x = compute_cond_vectorized_no_loop(X, p*(X-Y)**(p-1), Idx, NparticleThreshold, method)
+        gradcy_Cond_y = compute_cond_vectorized_no_loop(Y, p*(Y-X)**(p-1), Idy, NparticleThreshold, method)
+
         ## keep a history of Wp distance
         dists.append(np.mean(np.sum((X - Y) ** p, axis=1)))
         if it>minNt:
@@ -240,7 +241,7 @@ def ocd_map_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None,
                 break
     return X, Y, dists, err_m2X, err_m2Y
 
-def ocd_map_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol=1e-14, minNt = 100, NparticleThreshold=10):
+def ocd_map_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol=1e-14, minNt = 100, method="constant", NparticleThreshold=10):
     ## This function finds the map between X and Y by solving OCD dynamics using RK4
     # inputs: X: (N,dim),
     #         Y: (Np,dim),
@@ -330,7 +331,7 @@ def ocd_map_RK4(X00, Y00, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol
                 break
     return X, Y, dists, err_m2X, err_m2Y
 
-def ocd_map_RK4_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol=1e-14, minNt = 100, NparticleThreshold=10):
+def ocd_map_RK4_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=None, tol=1e-14, minNt = 100, method="constant", NparticleThreshold=10):
     ## This function finds the map between X and Y by solving OCD dynamics using RK4
     # inputs: X: (N,dim),
     #         Y: (Np,dim),
@@ -340,6 +341,7 @@ def ocd_map_RK4_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=N
     #         sigma: the kernel bandwidth for computing conditional expectation
     #         tol: convergence tolerance
     #         minNt: minimum number of iterations
+    #         method: method of computing conditional expectation, piecewise "constant" or "linear"
     #         NparticleThreshold: number of particles as the threshold to switch between 
     #                             piecewse constant and linear approximation of conditional expectation
     # outputs: X (N,dim),
@@ -355,8 +357,6 @@ def ocd_map_RK4_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=N
     Y = Y00.copy()
     m2X = np.mean(X00, axis=0)
     m2Y = np.mean(Y00, axis=0)
-
-    np_particles, d = Y.shape
 
     gradcx_Cond_x = np.zeros_like(X)   # Initialize Y conditional X
     gradcy_Cond_y = np.zeros_like(Y)   # Initialize X conditional Y
@@ -384,24 +384,24 @@ def ocd_map_RK4_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=N
         Y_mid = Y0 + 0.5 * k1_Y
         Idx_mid = rangesearch(X_mid, rx)
         Idy_mid = rangesearch(Y_mid, ry)
-        gradcx_Cond_x_mid = compute_cond_vectorized_no_loop(X_mid, p*(X_mid-Y_mid)**(p-1), Idx_mid, NparticleThreshold)
-        gradcy_Cond_y_mid = compute_cond_vectorized_no_loop(Y_mid, p*(Y_mid-X_mid)**(p-1), Idy_mid, NparticleThreshold)
+        gradcx_Cond_x_mid = compute_cond_vectorized_no_loop(X_mid, p*(X_mid-Y_mid)**(p-1), Idx_mid, NparticleThreshold,method)
+        gradcy_Cond_y_mid = compute_cond_vectorized_no_loop(Y_mid, p*(Y_mid-X_mid)**(p-1), Idy_mid, NparticleThreshold,method)
         k2_X = (-p*(X_mid-Y_mid)**(p-1) + gradcx_Cond_x_mid) * dt
         k2_Y = (-p*(Y_mid-X_mid)**(p-1) + gradcy_Cond_y_mid) * dt
         X_mid = X0 + 0.5 * k2_X
         Y_mid = Y0 + 0.5 * k2_Y
         Idx_mid = rangesearch(X_mid, rx)
         Idy_mid = rangesearch(Y_mid, ry)
-        gradcx_Cond_x_mid = compute_cond_vectorized_no_loop(X_mid, p*(X_mid-Y_mid)**(p-1), Idx_mid, NparticleThreshold)
-        gradcy_Cond_y_mid = compute_cond_vectorized_no_loop(Y_mid, p*(Y_mid-X_mid)**(p-1), Idy_mid, NparticleThreshold)
+        gradcx_Cond_x_mid = compute_cond_vectorized_no_loop(X_mid, p*(X_mid-Y_mid)**(p-1), Idx_mid, NparticleThreshold,method)
+        gradcy_Cond_y_mid = compute_cond_vectorized_no_loop(Y_mid, p*(Y_mid-X_mid)**(p-1), Idy_mid, NparticleThreshold,method)
         k3_X = (-p*(X_mid-Y_mid)**(p-1) + gradcx_Cond_x_mid) * dt
         k3_Y = (-p*(Y_mid-X_mid)**(p-1) + gradcy_Cond_y_mid) * dt
         X_end = X0 + k3_X
         Y_end = Y0 + k3_Y
         Idx_end = rangesearch(X_end, rx)
         Idy_end = rangesearch(Y_end, ry)
-        gradcx_Cond_x_end = compute_cond_vectorized_no_loop(X_end, p*(X_end-Y_end)**(p-1), Idx_end, NparticleThreshold)
-        gradcy_Cond_y_end = compute_cond_vectorized_no_loop(Y_end, p*(Y_end-X_end)**(p-1), Idy_end, NparticleThreshold)
+        gradcx_Cond_x_end = compute_cond_vectorized_no_loop(X_end, p*(X_end-Y_end)**(p-1), Idx_end, NparticleThreshold,method)
+        gradcy_Cond_y_end = compute_cond_vectorized_no_loop(Y_end, p*(Y_end-X_end)**(p-1), Idy_end, NparticleThreshold,method)
         k4_X = (-p*(X_end-Y_end)**(p-1) + gradcx_Cond_x_end) * dt
         k4_Y = (-p*(Y_end-X_end)**(p-1) + gradcy_Cond_y_end) * dt
         X = X0 + (k1_X + 2*k2_X + 2*k3_X + k4_X) / 6.0
@@ -409,8 +409,8 @@ def ocd_map_RK4_lp(X00, Y00, p=2, dt=0.01, Nt=1000, sigma=0.1, epsX=None, epsY=N
         
         Idx = rangesearch(X, rx)
         Idy = rangesearch(Y, ry)
-        gradcx_Cond_x = compute_cond_vectorized_no_loop(X, p*(X-Y)**(p-1), Idx, NparticleThreshold) 
-        gradcy_Cond_y = compute_cond_vectorized_no_loop(Y, p*(Y-X)**(p-1), Idy, NparticleThreshold)
+        gradcx_Cond_x = compute_cond_vectorized_no_loop(X, p*(X-Y)**(p-1), Idx, NparticleThreshold,method) 
+        gradcy_Cond_y = compute_cond_vectorized_no_loop(Y, p*(Y-X)**(p-1), Idy, NparticleThreshold,method)
 
         ## keep a history of Wp distance
         dists.append(np.mean(np.sum((X - Y) ** p, axis=1)))
